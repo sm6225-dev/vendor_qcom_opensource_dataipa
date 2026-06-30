@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023, 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "ipa_i.h"
@@ -51,6 +51,13 @@ alloc:
 	list_for_each_entry(entry, &ipa3_ctx->hdr_tbl[loc].head_hdr_entry_list, link) {
 		IPADBG_LOW("hdr of len %d ofst=%d\n", entry->hdr_len,
 				entry->offset_entry->offset);
+		/* Safety check for pointer and header length to avoid dangerous overflow in HW */
+		if (unlikely(!entry->offset_entry ||
+			entry->hdr_len > ipa_hdr_bin_sz[IPA_HDR_BIN_MAX - 1])) {
+			IPAERR_RL("Invalid hdr entry\n");
+			return -EINVAL;
+		}
+
 		ipahal_cp_hdr_to_hw_buff(mem->base, entry->offset_entry->offset,
 				entry->hdr, entry->hdr_len);
 	}
@@ -776,7 +783,10 @@ static int __ipa3_del_hdr_proc_ctx(u32 proc_ctx_hdl,
 		return 0;
 	}
 
-	if (release_hdr)
+	if (entry->hdr && entry == entry->hdr->proc_ctx)
+		entry->hdr->proc_ctx = NULL;
+
+	if (entry->hdr && release_hdr)
 		__ipa3_del_hdr(entry->hdr->id, false);
 
 	/* move the offset entry to appropriate free list */
@@ -866,12 +876,17 @@ int __ipa3_del_hdr(u32 hdr_hdl, bool by_user)
 		return 0;
 	}
 
+	if (entry->proc_ctx && entry == entry->proc_ctx->hdr)
+		entry->proc_ctx->hdr = NULL;
+
 	if (entry->proc_ctx)
 		__ipa3_del_hdr_proc_ctx(entry->proc_ctx->id, false, false);
-	else
-		/* move the offset entry to appropriate free list */
-		list_move(&entry->offset_entry->link,
-			&htbl->head_free_offset_list[entry->offset_entry->bin]);
+
+	IPADBG("=== entry->offset_entry->offset=%d\n", entry->offset_entry->offset);
+
+	/* move the offset entry to appropriate free list */
+	list_move(&entry->offset_entry->link,
+		&htbl->head_free_offset_list[entry->offset_entry->bin]);
 	list_del(&entry->link);
 	htbl->hdr_cnt--;
 	entry->cookie = 0;
